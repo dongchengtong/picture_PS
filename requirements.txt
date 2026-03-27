@@ -1,4 +1,4 @@
-pip>=26.0
+pip==26.0.1
 altair==5.5.0
 attrs==25.4.0
 blinker==1.9.0
