@@ -2,6 +2,7 @@ import os
 import io
 import time
 import base64
+import zipfile
 import requests
 import streamlit as st
 from PIL import Image
@@ -10,7 +11,7 @@ from PIL import Image
 DEFAULT_API_URL = "https://ark.cn-beijing.volces.com/api/v3/images/generations"
 DEFAULT_MODEL = "doubao-seedream-4-5-251128"
 TARGET_SIZE = (800, 800)
-API_KEY = "e352cec2-0723-4eb8-8bfa-e1b00aba13cd"
+API_KEY = ""
 # e352cec2-0723-4eb8-8bfa-e1b00aba13cd
 
 # ==================== 工具函数 ====================
@@ -172,6 +173,8 @@ st.title("图生图生成工具（支持多Prompt选择）")
 # ==================== 侧边栏配置 ====================
 with st.sidebar:
     # ========== Prompt配置（移到最顶部）==========
+    st.header("请先输入密钥")
+    api_key = st.text_input("API Key", value=os.getenv("ARK_API_KEY", API_KEY), type="password")
     st.header("📝 Prompt 配置")
 
     # Prompt 1 配置
@@ -229,7 +232,7 @@ with st.sidebar:
 
     # ========== API配置 ==========
     st.header("⚙️ API 配置")
-    api_key = st.text_input("API Key", value=os.getenv("ARK_API_KEY", API_KEY), type="password")
+    # api_key = st.text_input("API Key", value=os.getenv("ARK_API_KEY", API_KEY), type="password")
     api_url = st.text_input("API URL", value=os.getenv("ARK_API_URL", DEFAULT_API_URL))
     model = st.text_input("Model", value=os.getenv("ARK_MODEL", DEFAULT_MODEL))
 
@@ -266,136 +269,266 @@ prompt_options = {
 st.divider()
 
 # 主界面
-tab1, tab2 = st.tabs(["单张处理", "批量处理（文件夹）"])
+# tab1, tab2 = st.tabs(["单张处理", "批量处理（文件夹）"])
 
 # ===== 单张处理标签 =====
-with tab1:
-    col_in, col_out = st.columns([1, 1])
+# with tab1:
+#     col_in, col_out = st.columns([1, 1])
+#
+#     with col_in:
+#         st.subheader("输入")
+#         input_mode = st.radio("输入方式", ["上传图片"], horizontal=True, key="single_mode")
+#
+#         input_img = None
+#         input_name = "input.png"
+#
+#         if input_mode == "上传图片":
+#             uploaded = st.file_uploader("上传单张图片", type=["png", "jpg", "jpeg", "webp", "bmp", "tiff"],
+#                                         key="single_upload")
+#             if uploaded:
+#                 input_img = load_image_from_upload(uploaded)
+#                 input_name = uploaded.name
+#         else:
+#             path = st.text_input("本地图片路径", value="", key="single_path")
+#             if path and os.path.exists(path) and os.path.isfile(path):
+#                 try:
+#                     input_img = load_image_from_path(path)
+#                     input_name = os.path.basename(path)
+#                 except Exception as e:
+#                     st.error(f"读取图片失败：{e}")
+#
+#         # 单张处理：选择使用哪个Prompt
+#         st.subheader("选择Prompt")
+#         selected_prompt_key = st.radio(
+#             "使用哪个Prompt？",
+#             options=list(prompt_options.keys()),
+#             horizontal=True,
+#             key="single_prompt_select"
+#         )
+#         selected_prompt = prompt_options[selected_prompt_key]
+#
+#         # 显示选中的prompt内容（只读）
+#         st.text_area("当前使用的Prompt", value=selected_prompt, height=100, disabled=True, key="single_prompt_display")
+#         generate = st.button("开始生成（1张）", type="primary", use_container_width=True, disabled=(input_img is None),
+#                              key="single_generate")
+#         if input_img is not None:
+#             st.caption(f"输入预览：{input_name} | {input_img.size[0]}x{input_img.size[1]}")
+#             st.image(input_img, use_column_width=True)
+#
+#     with col_out:
+#         st.subheader("输出")
+#         status_box = st.empty()
+#         log_box = st.empty()
+#
+#         if "gen_img_bytes" not in st.session_state:
+#             st.session_state.gen_img_bytes = None
+#             st.session_state.post_img_bytes = None
+#
+#         if generate and input_img:
+#             if not api_key:
+#                 st.error("请填写 API Key")
+#             else:
+#                 logs = []
+#
+#
+#                 def log(msg):
+#                     logs.append(msg)
+#                     log_box.code("\n".join(logs), language="text")
+#
+#
+#                 try:
+#                     status_box.info("准备中…")
+#                     log(f"1) 准备输入图片…")
+#                     log(f"   使用Prompt: {selected_prompt_key}")
+#                     req_img = ensure_min_size_for_api(input_img)
+#                     if req_img.size != input_img.size:
+#                         log(f"   自动放大: {input_img.size} → {req_img.size}")
+#
+#                     status_box.info("调用API生成中…")
+#                     log("2) 调用API生成…")
+#                     url = call_image_generation_api(
+#                         api_url=api_url.strip(),
+#                         api_key=api_key.strip(),
+#                         model=model.strip(),
+#                         prompt=selected_prompt,
+#                         input_img=req_img,
+#                         size=size,
+#                         watermark=watermark,
+#                     )
+#                     log(f"   生成URL: {url[:60]}...")
+#
+#                     time.sleep(float(request_delay))
+#
+#                     status_box.info("下载与后处理…")
+#                     log("3) 下载生成图片…")
+#                     gen_img = download_image_to_pil(url)
+#                     _tmp = gen_img.copy()
+#                     _tmp.thumbnail(TARGET_SIZE, Image.Resampling.LANCZOS)
+#                     _canvas = Image.new("RGBA", TARGET_SIZE, (255, 255, 255, 0))
+#                     _canvas.paste(_tmp, ((TARGET_SIZE[0] - _tmp.size[0]) // 2, (TARGET_SIZE[1] - _tmp.size[1]) // 2))
+#                     st.session_state.gen_img_bytes = pil_to_bytes(_canvas, fmt="PNG")
+#
+#                     log("4) 后处理…")
+#                     if postprocess == "裁剪缩放到800x800（保留场景）":
+#                         post_img = resize_to_target_cover(gen_img, TARGET_SIZE)
+#                     elif postprocess == "rembg抠图+800x800（主体占满）":
+#                         post_img = remove_bg_and_resize(gen_img, TARGET_SIZE)
+#                     else:
+#                         post_img = gen_img
+#                     st.session_state.post_img_bytes = pil_to_bytes(post_img, fmt="PNG")
+#
+#                     status_box.success("完成")
+#                     log("完成 ✅")
+#
+#                 except Exception as e:
+#                     status_box.error(f"失败：{e}")
+#                     log(f"失败 ❌: {e}")
+#
+#         if st.session_state.gen_img_bytes:
+#             c1, c2 = st.columns(2)
+#             with c1:
+#                 st.caption("AI生成原图")
+#                 st.image(st.session_state.gen_img_bytes, use_column_width=True)
+#                 st.download_button("下载AI生成原图", st.session_state.gen_img_bytes, f"ai_{input_name}", "image/png")
+#             with c2:
+#                 st.caption("后处理结果")
+#                 st.image(st.session_state.post_img_bytes, use_column_width=True)
+#                 st.download_button("下载透明图", st.session_state.post_img_bytes, f"post_{input_name}", "image/png")
 
-    with col_in:
-        st.subheader("输入")
-        input_mode = st.radio("输入方式", ["上传图片"], horizontal=True, key="single_mode")
+# ===== 批量处理标签 =====
+# with tab1:
+# st.subheader("批量处理文件夹（根目录+子文件夹分别设置Prompt）")
 
-        input_img = None
-        input_name = "input.png"
+# input_method = st.radio("输入方式", ["上传图片（可多张）", "输入文件夹路径"],
+#                         horizontal=True, key="batch_input_method")
+input_method = st.radio("输入方式", ["上传图片（可多张）"],
+                        horizontal=True, key="batch_input_method")
 
-        if input_mode == "上传图片":
-            uploaded = st.file_uploader("上传单张图片", type=["png", "jpg", "jpeg", "webp", "bmp", "tiff"],
-                                        key="single_upload")
-            if uploaded:
-                input_img = load_image_from_upload(uploaded)
-                input_name = uploaded.name
-        else:
-            path = st.text_input("本地图片路径", value="", key="single_path")
-            if path and os.path.exists(path) and os.path.isfile(path):
-                try:
-                    input_img = load_image_from_path(path)
-                    input_name = os.path.basename(path)
-                except Exception as e:
-                    st.error(f"读取图片失败：{e}")
+# ===== 上传文件夹模式 =====
+if input_method == "上传图片（可多张）":
+    uploaded_batch = st.file_uploader(
+        "选择或拖入图片（可多选）",
+        type=["png", "jpg", "jpeg", "webp", "bmp", "tiff"],
+        accept_multiple_files=True,
+        key="batch_upload_files"
+    )
+    if uploaded_batch:
+        st.info(f"已上传 {len(uploaded_batch)} 张图片")
 
-        # 单张处理：选择使用哪个Prompt
-        st.subheader("选择Prompt")
-        selected_prompt_key = st.radio(
-            "使用哪个Prompt？",
+        st.subheader("📋 选择Prompt")
+        upload_prompt_key = st.radio(
+            "若修改Prompt，请在侧边栏对应位置修改",
             options=list(prompt_options.keys()),
             horizontal=True,
-            key="single_prompt_select"
+            key="upload_prompt_select"
         )
-        selected_prompt = prompt_options[selected_prompt_key]
 
-        # 显示选中的prompt内容（只读）
-        st.text_area("当前使用的Prompt", value=selected_prompt, height=100, disabled=True, key="single_prompt_display")
-        generate = st.button("开始生成（1张）", type="primary", use_container_width=True, disabled=(input_img is None),
-                             key="single_generate")
-        if input_img is not None:
-            st.caption(f"输入预览：{input_name} | {input_img.size[0]}x{input_img.size[1]}")
-            st.image(input_img, use_column_width=True)
-
-    with col_out:
-        st.subheader("输出")
-        status_box = st.empty()
-        log_box = st.empty()
-
-        if "gen_img_bytes" not in st.session_state:
-            st.session_state.gen_img_bytes = None
-            st.session_state.post_img_bytes = None
-
-        if generate and input_img:
+        if st.button("🚀 开始批量处理", type="primary", use_container_width=True, key="upload_batch_start"):
             if not api_key:
                 st.error("请填写 API Key")
             else:
+                dl_slot = st.empty()
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                log_container = st.container()
                 logs = []
 
 
                 def log(msg):
                     logs.append(msg)
-                    log_box.code("\n".join(logs), language="text")
+                    with log_container:
+                        st.code("\n".join(logs[-30:]), language="text")
 
 
-                try:
-                    status_box.info("准备中…")
-                    log(f"1) 准备输入图片…")
-                    log(f"   使用Prompt: {selected_prompt_key}")
-                    req_img = ensure_min_size_for_api(input_img)
-                    if req_img.size != input_img.size:
-                        log(f"   自动放大: {input_img.size} → {req_img.size}")
+                prompt_content = prompt_options[upload_prompt_key]
+                total = len(uploaded_batch)
+                success_count = 0
+                fail_count = 0
+                results = []
 
-                    status_box.info("调用API生成中…")
-                    log("2) 调用API生成…")
-                    url = call_image_generation_api(
-                        api_url=api_url.strip(),
-                        api_key=api_key.strip(),
-                        model=model.strip(),
-                        prompt=selected_prompt,
-                        input_img=req_img,
-                        size=size,
-                        watermark=watermark,
-                    )
-                    log(f"   生成URL: {url[:60]}...")
+                for idx, uf in enumerate(uploaded_batch):
+                    pct = int(idx / total * 100)
+                    progress_bar.progress(idx / total, text=f"处理中… 第 {idx + 1}/{total} 张  {pct}%")
+                    status_text.info(f"处理中… {idx + 1}/{total} | {uf.name}")
 
-                    time.sleep(float(request_delay))
+                    try:
+                        log(f"\n[{idx + 1}/{total}] {uf.name}")
+                        log(f"   Prompt: {upload_prompt_key}")
 
-                    status_box.info("下载与后处理…")
-                    log("3) 下载生成图片…")
-                    gen_img = download_image_to_pil(url)
-                    _tmp = gen_img.copy()
-                    _tmp.thumbnail(TARGET_SIZE, Image.Resampling.LANCZOS)
-                    _canvas = Image.new("RGBA", TARGET_SIZE, (255, 255, 255, 0))
-                    _canvas.paste(_tmp, ((TARGET_SIZE[0] - _tmp.size[0]) // 2, (TARGET_SIZE[1] - _tmp.size[1]) // 2))
-                    st.session_state.gen_img_bytes = pil_to_bytes(_canvas, fmt="PNG")
+                        uf.seek(0)
+                        input_img = load_image_from_upload(uf)
+                        req_img = ensure_min_size_for_api(input_img)
+                        if req_img.size != input_img.size:
+                            log(f"   放大: {input_img.size} → {req_img.size}")
 
-                    log("4) 后处理…")
-                    if postprocess == "裁剪缩放到800x800（保留场景）":
-                        post_img = resize_to_target_cover(gen_img, TARGET_SIZE)
-                    elif postprocess == "rembg抠图+800x800（主体占满）":
-                        post_img = remove_bg_and_resize(gen_img, TARGET_SIZE)
-                    else:
-                        post_img = gen_img
-                    st.session_state.post_img_bytes = pil_to_bytes(post_img, fmt="PNG")
+                        url = call_image_generation_api(
+                            api_url=api_url.strip(),
+                            api_key=api_key.strip(),
+                            model=model.strip(),
+                            prompt=prompt_content,
+                            input_img=req_img,
+                            size=size,
+                            watermark=watermark,
+                        )
 
-                    status_box.success("完成")
-                    log("完成 ✅")
+                        time.sleep(float(request_delay))
 
-                except Exception as e:
-                    status_box.error(f"失败：{e}")
-                    log(f"失败 ❌: {e}")
+                        gen_img = download_image_to_pil(url)
 
-        if st.session_state.gen_img_bytes:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.caption("AI生成原图")
-                st.image(st.session_state.gen_img_bytes, use_column_width=True)
-                st.download_button("下载AI生成原图", st.session_state.gen_img_bytes, f"ai_{input_name}", "image/png")
-            with c2:
-                st.caption("后处理结果")
-                st.image(st.session_state.post_img_bytes, use_column_width=True)
-                st.download_button("下载透明图", st.session_state.post_img_bytes, f"post_{input_name}", "image/png")
+                        if postprocess == "裁剪缩放到800x800（保留场景）":
+                            final_img = resize_to_target_cover(gen_img, TARGET_SIZE)
+                        elif postprocess == "rembg抠图+800x800（主体占满）":
+                            final_img = remove_bg_and_resize(gen_img, TARGET_SIZE)
+                        else:
+                            final_img = gen_img
 
-# ===== 批量处理标签 =====
-with tab2:
-    st.subheader("批量处理文件夹（根目录+子文件夹分别设置Prompt）")
+                        base_name = os.path.splitext(uf.name)[0]
+                        out_filename = f"{base_name}{output_suffix}.png"
+                        results.append((out_filename, pil_to_bytes(final_img, fmt="PNG")))
+                        log(f"   ✅ 完成: {out_filename}")
+                        success_count += 1
 
+                    except Exception as e:
+                        log(f"   ❌ 失败: {str(e)[:100]}")
+                        fail_count += 1
+                        continue
+
+                progress_bar.progress(1.0, text=f"✅ 100%  全部处理完成（成功 {success_count} 张，失败 {fail_count} 张）")
+                status_text.success(f"🎉 批量处理完成！成功: {success_count}, 失败: {fail_count}")
+                log(f"\n{'=' * 50}")
+                log(f"✅ 处理完成！总计: {total}，成功: {success_count}，失败: {fail_count}")
+
+                if results:
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for fname, fbytes in results:
+                            zf.writestr(fname, fbytes)
+                    st.session_state.upload_batch_zip = zip_buf.getvalue()
+                    st.session_state.upload_batch_count = len(results)
+                    with dl_slot:
+                        st.download_button(
+                            f"⬇️ 下载全部结果（{len(results)} 张，ZIP）",
+                            st.session_state.upload_batch_zip,
+                            file_name="batch_results.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                            type="primary",
+                            key="dl_slot_btn"
+                        )
+
+        if st.session_state.get("upload_batch_zip"):
+            st.download_button(
+                f"⬇️ 下载全部结果（{st.session_state.upload_batch_count} 张，ZIP）",
+                st.session_state.upload_batch_zip,
+                file_name="batch_results.zip",
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+                key="upload_download_zip"
+            )
+
+# ===== 输入路径模式 =====
+else:
     folder_path = st.text_input("输入文件夹路径", value="", key="batch_folder")
 
     if folder_path:
@@ -555,8 +688,9 @@ with tab2:
                                 fail_count = 0
 
                                 for idx, task in enumerate(all_tasks):
-                                    progress = (idx + 1) / total_tasks
-                                    progress_bar.progress(progress)
+                                    progress = idx / total_tasks
+                                    pct = int(progress * 100)
+                                    progress_bar.progress(progress, text=f"处理中… 第 {idx + 1}/{total_tasks} 张  {pct}%")
                                     status_text.info(
                                         f"处理中… {idx + 1}/{total_tasks} | "
                                         f"目录: {task['folder_name']} | "
@@ -628,7 +762,7 @@ with tab2:
                                         continue
 
                                 # 完成总结
-                                progress_bar.empty()
+                                progress_bar.progress(1.0, text=f"✅ 100%  全部处理完成（成功 {success_count} 张，失败 {fail_count} 张）")
                                 status_text.success(f"🎉 批量处理完成！成功: {success_count}, 失败: {fail_count}")
                                 log(f"\n{'=' * 50}")
                                 log(f"✅ 处理完成！")
