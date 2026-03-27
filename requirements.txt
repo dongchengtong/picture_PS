@@ -1,9 +1,9 @@
 streamlit==1.41.0
 streamlit-drawable-canvas==0.9.3
-pillow>=9.0.0,<12
-rembg==2.0.72
+pillow<12,>=9.0.0
+rembg==2.0.67
 opencv-python==4.9.0.80
-numpy>=1.26.0,<3
+numpy<3,>=1.26.0
 scipy>=1.10.0
 scikit-image>=0.20.0
 pandas>=2.0.0
