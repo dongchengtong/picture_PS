@@ -85,9 +85,13 @@ def ensure_min_size_for_api(img: Image.Image, min_pixels=3686400) -> Image.Image
 
 
 def call_image_generation_api(api_url, api_key, model, prompt, input_img, size="2K", watermark=False, timeout=120):
-    mime = guess_mime_from_pil(input_img)
-    image_bytes = pil_to_bytes(input_img, fmt="PNG" if mime == "png" else "JPEG")
+    # 发送前统一转 JPEG（丢弃 alpha），大幅减小 payload 体积，避免写超时
+    send_img = input_img.convert("RGB") if input_img.mode in ("RGBA", "LA", "P") else input_img
+    buf = io.BytesIO()
+    send_img.save(buf, format="JPEG", quality=85)
+    image_bytes = buf.getvalue()
     b64 = encode_bytes_to_base64(image_bytes)
+    mime = "jpeg"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -102,7 +106,7 @@ def call_image_generation_api(api_url, api_key, model, prompt, input_img, size="
         "watermark": watermark,
         "size": size,
     }
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+    resp = requests.post(api_url, headers=headers, json=payload, timeout=(30, timeout))
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
     data = resp.json()
