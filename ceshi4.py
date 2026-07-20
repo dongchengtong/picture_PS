@@ -15,9 +15,10 @@ API_KEY = ""
 # e352cec2-0723-4eb8-8bfa-e1b00aba13cd
 
 # ==================== 工具函数 ====================
-def pil_to_bytes(img: Image.Image, fmt="PNG") -> bytes:
+def pil_to_bytes(img: Image.Image, fmt="PNG", quality=85) -> bytes:
     buf = io.BytesIO()
-    img.save(buf, format=fmt)
+    save_kwargs = {"quality": quality} if fmt.upper() in ("JPEG", "JPG") else {}
+    img.save(buf, format=fmt, **save_kwargs)
     return buf.getvalue()
 
 
@@ -85,13 +86,11 @@ def ensure_min_size_for_api(img: Image.Image, min_pixels=3686400) -> Image.Image
 
 
 def call_image_generation_api(api_url, api_key, model, prompt, input_img, size="2K", watermark=False, timeout=120):
-    # 发送前统一转 JPEG（丢弃 alpha），大幅减小 payload 体积，避免写超时
-    send_img = input_img.convert("RGB") if input_img.mode in ("RGBA", "LA", "P") else input_img
-    buf = io.BytesIO()
-    send_img.save(buf, format="JPEG", quality=85)
-    image_bytes = buf.getvalue()
-    b64 = encode_bytes_to_base64(image_bytes)
+    # 强制转 RGB 后以 JPEG 编码上传，避免 RGBA PNG 体积过大导致超时
+    upload_img = input_img.convert("RGB")
+    image_bytes = pil_to_bytes(upload_img, fmt="JPEG")
     mime = "jpeg"
+    b64 = encode_bytes_to_base64(image_bytes)
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -106,7 +105,7 @@ def call_image_generation_api(api_url, api_key, model, prompt, input_img, size="
         "watermark": watermark,
         "size": size,
     }
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=(30, timeout))
+    resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
     data = resp.json()
@@ -427,121 +426,44 @@ if input_method == "上传图片（可多张）":
             key="upload_prompt_select"
         )
 
-        # 清除上次结果按钮
-        if st.session_state.get("upload_batch_zip"):
-            if st.button("🗑️ 清除上次结果，重新处理", key="clear_prev_results"):
-                del st.session_state["upload_batch_zip"]
-                del st.session_state["upload_batch_count"]
-                if "upload_batch_logs" in st.session_state:
-                    del st.session_state["upload_batch_logs"]
-                st.rerun()
-
-        if st.button("🚀 开始批量处理", type="primary", use_container_width=True, key="upload_batch_start",
-                     disabled=bool(st.session_state.get("upload_batch_zip"))):
+        if st.button("🚀 开始批量处理", type="primary", use_container_width=True, key="upload_batch_start"):
             if not api_key:
                 st.error("请填写 API Key")
             else:
-                # 初始化 session_state 中的进度跟踪
-                st.session_state.upload_batch_logs = []
-                st.session_state.upload_batch_results = []
-                st.session_state.upload_batch_zip = None
-                st.session_state.upload_batch_count = 0
-
+                dl_slot = st.empty()
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                log_box = st.empty()
+                log_container = st.container()
+                logs = []
+
 
                 def log(msg):
-                    st.session_state.upload_batch_logs.append(msg)
-                    log_box.code("\n".join(st.session_state.upload_batch_logs[-30:]), language="text")
+                    logs.append(msg)
+                    with log_container:
+                        st.code("\n".join(logs[-30:]), language="text")
+
 
                 prompt_content = prompt_options[upload_prompt_key]
                 total = len(uploaded_batch)
                 success_count = 0
                 fail_count = 0
-
-                import traceback
-
-                def explain_error(step: str, exc: Exception) -> str:
-                    """将异常转成人类可读的中文错误说明"""
-                    msg = str(exc)
-                    tb = traceback.format_exc()
-                    # 网络 / 超时
-                    if "TimeoutError" in tb or "timed out" in msg.lower():
-                        if "write" in msg.lower() or "send" in msg.lower():
-                            return f"【{step}】上传图片超时：图片太大或网络太慢，数据还没发完就断了。建议检查网络或缩小图片尺寸。"
-                        if "read" in msg.lower() or "recv" in msg.lower():
-                            return f"【{step}】等待API响应超时：服务器处理时间超过限制。可以稍后重试，或在侧边栏加大请求间隔。"
-                        return f"【{step}】网络超时：{msg[:100]}"
-                    if "Connection aborted" in msg or "ConnectionError" in tb:
-                        return f"【{step}】网络连接中断：可能是本地网络不稳定或API服务器临时断开，请检查网络后重试。"
-                    if "ConnectionRefusedError" in tb:
-                        return f"【{step}】连接被拒绝：API地址无法访问，请检查API URL是否正确。"
-                    # HTTP 错误
-                    if "HTTP 401" in msg:
-                        return f"【{step}】API Key无效或已过期：服务器返回401未授权，请在侧边栏重新填写正确的API Key。"
-                    if "HTTP 403" in msg:
-                        return f"【{step}】API Key权限不足：服务器返回403禁止访问，请确认Key有调用该模型的权限。"
-                    if "HTTP 429" in msg:
-                        return f"【{step}】请求太频繁（限流）：服务器返回429，已触发速率限制。请在侧边栏调大请求间隔后重试。"
-                    if "HTTP 5" in msg:
-                        return f"【{step}】API服务器内部错误（{msg[:60]}）：这是服务器端的问题，稍后重试即可。"
-                    if "HTTP" in msg:
-                        return f"【{step}】API返回错误：{msg[:120]}"
-                    # API 返回内容问题
-                    if "url" in msg.lower() and "data" in msg.lower():
-                        return f"【{step}】API响应格式异常：返回了数据但没有图片URL，可能是模型不支持当前参数组合，请检查模型名称和size设置。"
-                    if "API error" in msg:
-                        return f"【{step}】API返回业务错误：{msg[:150]}"
-                    # 图片读取 / 处理
-                    if "cannot identify image file" in msg.lower() or "UnidentifiedImageError" in tb:
-                        return f"【{step}】图片格式无法识别：文件可能已损坏或是不支持的格式，请换一张图片试试。"
-                    if "rembg" in tb.lower() or "onnxruntime" in tb.lower():
-                        return f"【{step}】rembg抠图失败：{msg[:100]}。首次运行需联网下载模型（约100MB），请确认网络畅通；或换用裁剪缩放后处理模式。"
-                    if "MemoryError" in tb:
-                        return f"【{step}】内存不足：图片太大导致内存溢出，请减小图片分辨率后重试。"
-                    # 兜底
-                    last_line = tb.strip().splitlines()[-1] if tb.strip() else msg
-                    return f"【{step}】未知错误：{last_line[:200]}"
+                results = []
 
                 for idx, uf in enumerate(uploaded_batch):
-                    prefix = f"第 {idx + 1}/{total} 张【{uf.name}】"
                     pct = int(idx / total * 100)
-                    progress_bar.progress(idx / total, text=f"处理中… {prefix}  {pct}%")
-                    status_text.info(f"正在处理 {prefix}")
+                    progress_bar.progress(idx / total, text=f"处理中… 第 {idx + 1}/{total} 张  {pct}%")
+                    status_text.info(f"处理中… {idx + 1}/{total} | {uf.name}")
 
-                    log(f"\n{'─' * 48}")
-                    log(f"开始处理 {prefix}")
-                    log(f"  使用Prompt：{upload_prompt_key}")
-
-                    # ── 步骤1：读取图片 ──────────────────────────
                     try:
-                        log(f"  第1步：读取并解析图片…")
+                        log(f"\n[{idx + 1}/{total}] {uf.name}")
+                        log(f"   Prompt: {upload_prompt_key}")
+
                         uf.seek(0)
                         input_img = load_image_from_upload(uf)
-                        log(f"  第1步完成：图片尺寸 {input_img.size[0]}×{input_img.size[1]}，模式 {input_img.mode}")
-                    except Exception as e:
-                        log(f"  ✗ 第1步失败 → {explain_error('读取图片', e)}")
-                        fail_count += 1
-                        continue
-
-                    # ── 步骤2：分辨率检查/放大 ────────────────────
-                    try:
-                        log(f"  第2步：检查是否需要放大到API最低分辨率要求…")
                         req_img = ensure_min_size_for_api(input_img)
                         if req_img.size != input_img.size:
-                            log(f"  第2步完成：已放大 {input_img.size[0]}×{input_img.size[1]} → {req_img.size[0]}×{req_img.size[1]}")
-                        else:
-                            log(f"  第2步完成：尺寸已满足要求，无需放大")
-                    except Exception as e:
-                        log(f"  ✗ 第2步失败 → {explain_error('图片放大', e)}")
-                        fail_count += 1
-                        continue
+                            log(f"   放大: {input_img.size} → {req_img.size}")
 
-                    # ── 步骤3：调用API生成图片 ────────────────────
-                    try:
-                        status_text.info(f"正在处理 {prefix} — 第3步：调用AI生成接口（请耐心等待，通常需30～120秒）…")
-                        log(f"  第3步：调用AI图像生成接口，等待服务器响应（通常30～120秒）…")
                         url = call_image_generation_api(
                             api_url=api_url.strip(),
                             api_key=api_key.strip(),
@@ -551,63 +473,34 @@ if input_method == "上传图片（可多张）":
                             size=size,
                             watermark=watermark,
                         )
-                        log(f"  第3步完成：API已返回生成图片的下载地址")
-                    except Exception as e:
-                        log(f"  ✗ 第3步失败 → {explain_error('调用AI生成接口', e)}")
-                        fail_count += 1
-                        continue
 
-                    # ── 步骤4：下载生成的图片 ─────────────────────
-                    try:
-                        log(f"  第4步：从服务器下载生成的图片…")
                         time.sleep(float(request_delay))
-                        gen_img = download_image_to_pil(url)
-                        log(f"  第4步完成：下载成功，图片尺寸 {gen_img.size[0]}×{gen_img.size[1]}")
-                    except Exception as e:
-                        log(f"  ✗ 第4步失败 → {explain_error('下载生成图片', e)}")
-                        fail_count += 1
-                        continue
 
-                    # ── 步骤5：后处理 ─────────────────────────────
-                    try:
+                        gen_img = download_image_to_pil(url)
+
                         if postprocess == "裁剪缩放到800x800（保留场景）":
-                            log(f"  第5步：裁剪缩放到 800×800（保留背景场景）…")
                             final_img = resize_to_target_cover(gen_img, TARGET_SIZE)
                         elif postprocess == "rembg抠图+800x800（主体占满）":
-                            log(f"  第5步：rembg AI抠图（首次运行需下载模型约100MB，耗时较长）…")
-                            status_text.info(f"正在处理 {prefix} — 第5步：rembg抠图中，请稍候…")
                             final_img = remove_bg_and_resize(gen_img, TARGET_SIZE)
                         else:
-                            log(f"  第5步：不做后处理，保留原始生成图")
                             final_img = gen_img
-                        log(f"  第5步完成：后处理成功，最终尺寸 {final_img.size[0]}×{final_img.size[1]}")
-                    except Exception as e:
-                        log(f"  ✗ 第5步失败 → {explain_error('后处理', e)}")
-                        fail_count += 1
-                        continue
 
-                    # ── 步骤6：保存结果 ───────────────────────────
-                    try:
-                        log(f"  第6步：打包图片到内存，准备下载…")
                         base_name = os.path.splitext(uf.name)[0]
                         out_filename = f"{base_name}{output_suffix}.png"
-                        img_bytes = pil_to_bytes(final_img, fmt="PNG")
-                        st.session_state.upload_batch_results.append((out_filename, img_bytes))
-                        log(f"  第6步完成：已保存为 {out_filename}")
+                        results.append((out_filename, pil_to_bytes(final_img, fmt="PNG")))
+                        log(f"   ✅ 完成: {out_filename}")
+                        success_count += 1
+
                     except Exception as e:
-                        log(f"  ✗ 第6步失败 → {explain_error('保存图片', e)}")
+                        log(f"   ❌ 失败: {str(e)[:100]}")
                         fail_count += 1
                         continue
-
-                    log(f"  ✅ {prefix} 全部完成！")
-                    success_count += 1
 
                 progress_bar.progress(1.0, text=f"✅ 100%  全部处理完成（成功 {success_count} 张，失败 {fail_count} 张）")
                 status_text.success(f"🎉 批量处理完成！成功: {success_count}, 失败: {fail_count}")
                 log(f"\n{'=' * 50}")
                 log(f"✅ 处理完成！总计: {total}，成功: {success_count}，失败: {fail_count}")
 
-                results = st.session_state.upload_batch_results
                 if results:
                     zip_buf = io.BytesIO()
                     with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -615,9 +508,18 @@ if input_method == "上传图片（可多张）":
                             zf.writestr(fname, fbytes)
                     st.session_state.upload_batch_zip = zip_buf.getvalue()
                     st.session_state.upload_batch_count = len(results)
+                    with dl_slot:
+                        st.download_button(
+                            f"⬇️ 下载全部结果（{len(results)} 张，ZIP）",
+                            st.session_state.upload_batch_zip,
+                            file_name="batch_results.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                            type="primary",
+                            key="dl_slot_btn"
+                        )
 
         if st.session_state.get("upload_batch_zip"):
-            st.success(f"✅ 处理完成，共 {st.session_state.upload_batch_count} 张成功")
             st.download_button(
                 f"⬇️ 下载全部结果（{st.session_state.upload_batch_count} 张，ZIP）",
                 st.session_state.upload_batch_zip,
@@ -627,10 +529,6 @@ if input_method == "上传图片（可多张）":
                 type="primary",
                 key="upload_download_zip"
             )
-            # 恢复显示最近日志
-            if st.session_state.get("upload_batch_logs"):
-                with st.expander("查看处理日志", expanded=False):
-                    st.code("\n".join(st.session_state.upload_batch_logs), language="text")
 
 # ===== 输入路径模式 =====
 else:
